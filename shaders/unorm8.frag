@@ -101,7 +101,7 @@ void main() {
 	uint x = uint(floor(texture_coords.x));
 	uint y = uint(floor(texture_coords.y));
 	if (x >= width || y >= height) {
-		out_color = vec4(0.0, 0.0, 0.0, 0.0);
+		out_color = vec4(1.0, 0.0, 0.0, 1.0);
 	} else {
 		out_color = get_pixel(x, y);
 	}

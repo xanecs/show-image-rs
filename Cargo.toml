@@ -8,6 +8,7 @@ edition       = "2018"
 repository    = "https://github.com/robohouse-delft/show-image-rs"
 documentation = "https://docs.rs/show-image"
 readme        = "README.md"
+resolver      = "2"
 
 authors = [
 	"Maarten de Vries <maarten@de-vri.es>",
@@ -41,7 +42,7 @@ raqote            = { version="0.8.0", optional=true, default-features=false }
 show-image-macros = { version="=0.9.0", optional=true, path="show-image-macros" }
 tch               = { version=">=0.1.6, <0.6.0",  optional=true, default-features= false }
 tinyfiledialogs   = { version="3.3.9", optional=true }
-wgpu              = "0.9.0"
+wgpu              = { version="0.11.0", features=["spirv"] }
 winit             = "0.25.0"
 
 [dev-dependencies]

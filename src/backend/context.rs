@@ -66,8 +66,8 @@ pub struct Context {
 	/// The wgpu command queue to use.
 	pub queue: wgpu::Queue,
 
-	/// The swap chain format to use.
-	pub swap_chain_format: wgpu::TextureFormat,
+	/// The surface format to use.
+	pub surface_format: wgpu::TextureFormat,
 
 	/// The bind group layout for the window specific bindings.
 	pub window_bind_group_layout: wgpu::BindGroupLayout,
@@ -112,7 +112,7 @@ impl Context {
 	/// You can theoreticlly create as many contexts as you want,
 	/// but they must be run from the main thread and the [`run`](Self::run) function never returns.
 	/// So it is not possible to *run* more than one context.
-	pub fn new(swap_chain_format: wgpu::TextureFormat) -> Result<Self, GetDeviceError> {
+	pub fn new(surface_format: wgpu::TextureFormat) -> Result<Self, GetDeviceError> {
 		let instance = wgpu::Instance::new(select_backend());
 		let event_loop = EventLoop::with_user_event();
 		let proxy = ContextProxy::new(event_loop.create_proxy(), std::thread::current().id());
@@ -139,7 +139,7 @@ impl Context {
 			&pipeline_layout,
 			&vertex_shader,
 			&fragment_shader_unorm8,
-			swap_chain_format,
+			surface_format,
 		);
 		let image_pipeline = create_render_pipeline(
 			&device,
@@ -156,7 +156,7 @@ impl Context {
 			proxy,
 			device,
 			queue,
-			swap_chain_format,
+			surface_format,
 			window_bind_group_layout,
 			image_bind_group_layout,
 			window_pipeline,
@@ -294,9 +294,17 @@ impl Context {
 
 		let window = window.build(event_loop)?;
 
+		
 		let surface = unsafe { self.instance.create_surface(&window) };
 		let size = glam::UVec2::new(window.inner_size().width, window.inner_size().height);
-		let swap_chain = create_swap_chain(size, &surface, self.swap_chain_format, &self.device);
+		let surface_config = wgpu::SurfaceConfiguration {
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+			format: self.surface_format,
+			width: size.x,
+			height: size.y,
+			present_mode: wgpu::PresentMode::Mailbox,
+		};
+		surface.configure(&self.device, &surface_config);
 		let uniforms = UniformsBuffer::from_value(&self.device, &WindowUniforms::no_image(), &self.window_bind_group_layout);
 
 		let window = Window {
@@ -304,7 +312,7 @@ impl Context {
 			preserve_aspect_ratio: options.preserve_aspect_ratio,
 			background_color: options.background_color,
 			surface,
-			swap_chain,
+			surface_config,
 			uniforms,
 			image: None,
 			user_transform: Affine2::IDENTITY,
@@ -344,8 +352,10 @@ impl Context {
 			.iter_mut()
 			.find(|w| w.id() == window_id)
 			.ok_or(InvalidWindowId { window_id })?;
-
-		window.swap_chain = create_swap_chain(new_size, &window.surface, self.swap_chain_format, &self.device);
+		
+		window.surface_config.width = new_size.x;
+		window.surface_config.height = new_size.y;
+		window.surface.configure(&self.device, &window.surface_config);
 		window.uniforms.mark_dirty(true);
 		Ok(())
 	}
@@ -363,10 +373,8 @@ impl Context {
 			None => return Ok(()),
 		};
 
-		let frame = window
-			.swap_chain
-			.get_current_frame()
-			.expect("Failed to acquire next swap chain texture");
+		let output = window.surface.get_current_texture().expect("could not get current surface texture");
+		let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
 		let mut encoder = self.device.create_command_encoder(&Default::default());
 
@@ -382,7 +390,7 @@ impl Context {
 			&window.uniforms,
 			image,
 			Some(window.background_color),
-			&frame.output.view,
+			&view,
 		);
 		if window.overlays_visible {
 			for overlay in &window.overlays {
@@ -392,11 +400,12 @@ impl Context {
 					&window.uniforms,
 					overlay,
 					None,
-					&frame.output.view,
+					&view,
 				);
 			}
 		}
 		self.queue.submit(std::iter::once(encoder.finish()));
+		output.present();
 		Ok(())
 	}
 
@@ -429,7 +438,7 @@ impl Context {
 
 		let target = self.device.create_texture(&wgpu::TextureDescriptor {
 			label: Some(&format!("{}_render", image.name())),
-			usage: wgpu::TextureUsage::RENDER_ATTACHMENT | wgpu::TextureUsage::COPY_SRC,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
 			sample_count: 1,
 			mip_level_count: 1,
 			format: wgpu::TextureFormat::Rgba8Unorm,
@@ -467,12 +476,13 @@ impl Context {
 		let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
 			label: None,
 			size: u64::from(bytes_per_row) * u64::from(image.info().size.y),
-			usage: wgpu::BufferUsage::COPY_DST | wgpu::BufferUsage::MAP_READ,
+			usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
 			mapped_at_creation: false,
 		});
 
 		encoder.copy_texture_to_buffer(
 			wgpu::ImageCopyTexture {
+				aspect: wgpu::TextureAspect::All,
 				texture: &target,
 				mip_level: 0,
 				origin: wgpu::Origin3d::ZERO,
@@ -698,7 +708,7 @@ impl Context {
 	}
 }
 
-fn select_backend() -> wgpu::BackendBit {
+fn select_backend() -> wgpu::Backends {
 	let backend = std::env::var_os("WGPU_BACKEND").unwrap_or_else(|| "primary".into());
 	let backend = match backend.to_str() {
 		Some(backend) => backend,
@@ -709,19 +719,19 @@ fn select_backend() -> wgpu::BackendBit {
 	};
 
 	if backend.eq_ignore_ascii_case("primary") {
-		wgpu::BackendBit::PRIMARY
+		wgpu::Backends::PRIMARY
 	} else if backend.eq_ignore_ascii_case("vulkan") {
-		wgpu::BackendBit::VULKAN
+		wgpu::Backends::VULKAN
 	} else if backend.eq_ignore_ascii_case("metal") {
-		wgpu::BackendBit::METAL
+		wgpu::Backends::METAL
 	} else if backend.eq_ignore_ascii_case("dx12") {
-		wgpu::BackendBit::DX12
+		wgpu::Backends::DX12
 	} else if backend.eq_ignore_ascii_case("dx11") {
-		wgpu::BackendBit::DX11
+		wgpu::Backends::DX11
 	} else if backend.eq_ignore_ascii_case("gl") {
-		wgpu::BackendBit::GL
+		wgpu::Backends::GL
 	} else if backend.eq_ignore_ascii_case("webgpu") {
-		wgpu::BackendBit::BROWSER_WEBGPU
+		wgpu::Backends::BROWSER_WEBGPU
 	} else {
 		eprintln!("Unknown WGPU_BACKEND: {:?}", backend);
 		std::process::exit(1);
@@ -754,6 +764,7 @@ async fn get_device(instance: &wgpu::Instance) -> Result<(wgpu::Device, wgpu::Qu
 	let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
 		power_preference: select_power_preference(),
 		compatible_surface: None, // TODO: can we use a hidden window or something?
+		force_fallback_adapter: false,
 	});
 
 	let adapter = adapter.await.ok_or(NoSuitableAdapterFound)?;
@@ -779,7 +790,7 @@ fn create_window_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayo
 		label: Some("window_bind_group_layout"),
 		entries: &[wgpu::BindGroupLayoutEntry {
 			binding: 0,
-			visibility: wgpu::ShaderStage::VERTEX,
+			visibility: wgpu::ShaderStages::VERTEX,
 			count: None,
 			ty: wgpu::BindingType::Buffer {
 				ty: wgpu::BufferBindingType::Uniform,
@@ -797,7 +808,7 @@ fn create_image_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
 		entries: &[
 			wgpu::BindGroupLayoutEntry {
 				binding: 0,
-				visibility: wgpu::ShaderStage::FRAGMENT,
+				visibility: wgpu::ShaderStages::FRAGMENT,
 				count: None,
 				ty: wgpu::BindingType::Buffer {
 					ty: wgpu::BufferBindingType::Uniform,
@@ -807,11 +818,11 @@ fn create_image_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
 			},
 			wgpu::BindGroupLayoutEntry {
 				binding: 1,
-				visibility: wgpu::ShaderStage::FRAGMENT,
+				visibility: wgpu::ShaderStages::FRAGMENT,
 				count: None,
 				ty: wgpu::BindingType::Buffer {
 					ty: wgpu::BufferBindingType::Storage {
-						read_only: true,
+						read_only: false,
 					},
 					has_dynamic_offset: false,
 					min_binding_size: None,
@@ -854,7 +865,7 @@ fn create_render_pipeline(
 						operation: wgpu::BlendOperation::Add,
 					},
 				}),
-				write_mask: wgpu::ColorWrite::ALL,
+				write_mask: wgpu::ColorWrites::ALL,
 			}],
 		}),
 		primitive: wgpu::PrimitiveState {
@@ -873,24 +884,6 @@ fn create_render_pipeline(
 			alpha_to_coverage_enabled: false,
 		},
 	})
-}
-
-/// Create a swap chain for a surface.
-fn create_swap_chain(
-	size: glam::UVec2,
-	surface: &wgpu::Surface,
-	format: wgpu::TextureFormat,
-	device: &wgpu::Device,
-) -> wgpu::SwapChain {
-	let swap_chain_desc = wgpu::SwapChainDescriptor {
-		usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
-		format,
-		width: size.x,
-		height: size.y,
-		present_mode: wgpu::PresentMode::Mailbox,
-	};
-
-	device.create_swap_chain(surface, &swap_chain_desc)
 }
 
 /// Perform a render pass of an image.
@@ -921,7 +914,6 @@ fn render_pass(
 	render_pass.set_bind_group(0, window_uniforms.bind_group(), &[]);
 	render_pass.set_bind_group(1, image.bind_group(), &[]);
 	render_pass.draw(0..6, 0..1);
-	drop(render_pass);
 }
 
 fn align_next_u32(input: u32, alignment: u32) -> u32 {

@@ -31,8 +31,8 @@ pub struct Window {
 	/// The wgpu surface to render to.
 	pub surface: wgpu::Surface,
 
-	/// The swap chain for the surface.
-	pub swap_chain: wgpu::SwapChain,
+	// The configuration of the wgpu surface
+	pub surface_config: wgpu::SurfaceConfiguration,
 
 	/// The window specific uniforms for the render pipeline.
 	pub uniforms: UniformsBuffer<WindowUniforms>,
@@ -552,7 +552,7 @@ struct Vec2A16 {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 struct Mat3x2 {
-	pub cols: [Vec2A16; 3]
+	pub cols: [Vec2A8; 3]
 }
 
 impl Vec2A8 {
@@ -568,7 +568,7 @@ impl Vec2A16 {
 }
 
 impl Mat3x2 {
-	pub const fn new(col0: Vec2A16, col1: Vec2A16, col2: Vec2A16) -> Self {
+	pub const fn new(col0: Vec2A8, col1: Vec2A8, col2: Vec2A8) -> Self {
 		Self {
 			cols: [col0, col1, col2],
 		}
@@ -609,10 +609,12 @@ unsafe impl crate::backend::util::ToStd140 for WindowUniforms {
 	type Output = WindowUniformsStd140;
 
 	fn to_std140(&self) -> Self::Output {
-		Self::Output {
+		let v = Self::Output {
 			transform: self.transform.into(),
 			image_size: self.image_size.into(),
-		}
+		};
+		println!("{:?}", v.transform);
+		v
 	}
 }
 
